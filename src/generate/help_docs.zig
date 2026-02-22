@@ -260,7 +260,7 @@ fn createManpageCtx(
     const filepath = genFilepath: {
         comptime var path = if (mp_config.local_filepath.len >= 0) mp_config.local_filepath else ".";
         comptime { if (mem.indexOfScalar(u8, &.{ '/', '\\' }, path[path.len - 1]) == null) path = path ++ "/"; }
-        path = path ++ "manpages/";
+        path = path ++ "man" ++ &[_]u8{mp_config.section} ++ "/";
         try fs.cwd().makePath(path);
         break :genFilepath path ++ mp_name ++ "." ++ .{ mp_config.section };
     };
