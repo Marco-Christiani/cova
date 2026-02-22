@@ -89,7 +89,7 @@ pub fn main() !void {
                     continue;
                 }
             },
-            .bash, .zsh, .ps1 => |shell| {
+            .bash, .zsh, .ps1, .fish => |shell| {
                 if (tab_complete_config) |tc_config| {
                     try generate.createTabCompletion(
                         cmd_type_name,
