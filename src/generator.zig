@@ -17,10 +17,20 @@ const generate = cova.generate;
 const utils = cova.utils;
 
 /// This is a reference module for the program being built. Typically this is the main `.zig` file
-/// in a project that has both the `main()` function and `setup_cmd` Command. 
+/// in a project that has both the `main()` function and `setup_cmd` Command.
 const program = @import("program");
 /// This is a reference to the Build Options passed in from `build.zig`.
 const md_config = @import("md_config_opts");
+
+/// Allow the consumer's build.zig to control generator log verbosity via
+/// `md_config_opts.addOption(usize, "log_level", @intFromEnum(std.log.Level.warn))`.
+/// Defaults to `.info` if the option is not provided (backwards compatible).
+pub const std_options: std.Options = .{
+    .log_level = if (@hasDecl(md_config, "log_level"))
+        @enumFromInt(md_config.log_level)
+    else
+        .info,
+};
 /// Help Docs Config
 const help_docs_config = optsToConf(generate.HelpDocsConfig, @import("help_docs_config"));
 /// Tab Completion Config
