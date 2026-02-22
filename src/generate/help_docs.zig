@@ -278,7 +278,7 @@ fn createManpageCtx(
             else //
                 ".";
         comptime { if (mem.indexOfScalar(u8, &.{ '/', '\\' }, path[path.len - 1]) == null) path = path ++ "/"; }
-        path = path ++ "manpages/";
+        path = path ++ "man" ++ &[_]u8{mp_config.section} ++ "/";
         try Io.Dir.cwd().createDirPath(io, path);
         break :genFilepath path ++ mp_name ++ "." ++ .{ mp_config.section };
     };
