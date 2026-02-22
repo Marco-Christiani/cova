@@ -42,6 +42,7 @@ pub const TabCompletionConfig = struct{
         bash,
         zsh,
         ps1,
+        fish,
     };
 };
 /// Create a Tab Completion script for the provided CommandT (`cmd`) configured by the given TabCompletionConfig (`tc_config`).
@@ -58,6 +59,7 @@ pub fn createTabCompletion(
         .bash => "#! /usr/bin/env bash",
         .zsh => "#compdef " ++ cmd.name,
         .ps1 => "# Requires PowerShell v5.1+",
+        .fish => "#!/usr/bin/env fish",
     };
     const filename = (if (shell_kind == .zsh) "_" else "") ++ tc_name ++ "-completion." ++ @tagName(shell_kind);
     const filepath = genFilepath: {
@@ -93,6 +95,7 @@ pub fn createTabCompletion(
     );
     const tc_ctx = TabCompletionContext{
         .name = tc_name,
+        .root_name = tc_name,
         .include_cmds = tc_config.include_cmds,
         .include_opts = tc_config.include_opts,
         .include_usage_help = tc_config.include_usage_help,
@@ -189,6 +192,28 @@ pub fn createTabCompletion(
             }
             try cmdTabCompletionPowerShell(CommandT, cmd, tc_writer, tc_ctx);
         },
+        .fish => {
+            if (tc_config.add_install_instructions) {
+                try tc_writer.print(
+                    \\# Fish Completion Installation Instructions for {s}
+                    \\# 1. Place this script in ~/.config/fish/completions/{s}
+                    \\#
+                    \\# 2. Fish will automatically load it on next shell start.
+                    \\#
+                    \\# 3. Or source it manually:
+                    \\#    source /path/to/{s}
+                    \\
+                    \\
+                    \\
+                    , .{
+                        tc_name,
+                        filename,
+                        filename,
+                    }
+                );
+            }
+            try cmdTabCompletionFish(CommandT, cmd, tc_writer, tc_ctx);
+        },
     }
     log.info("Generated '{s}' Tab Completion script for '{s}' into '{s}'.", .{ @tagName(shell_kind), cmd.name, filepath });
 }
@@ -199,6 +224,8 @@ const TabCompletionContext = struct{
     parent_name: []const u8 = "",
     /// Command Name
     name: []const u8 = "",
+    /// Root program name (needed by fish for every `complete -c` call)
+    root_name: []const u8 = "",
     /// Argument Index
     idx: u8 = 1,
     /// Include Commands for Tab Completion.
@@ -488,5 +515,166 @@ fn cmdTabCompletionPowerShell(
             // TODO Make this dependent on the name given by the build
             , .{ tc_ctx.name ++ ".exe" }
         );
+    }
+}
+
+/// Writes a Fish Tab Completion script for the provided CommandT (`cmd`) to the given Writer (`tc_writer`).
+/// This function passes the provided TabCompletionContext (`tc_ctx`) to track info through recursive calls.
+///
+/// Fish completions use `-l`/`-s` to declare options (fish handles prefix and `=value` syntax)
+/// and `-a` for positional arguments (subcommand names). The `-f` flag suppresses file completions
+/// on subcommand entries; it is omitted on options so option values can complete to filenames.
+fn cmdTabCompletionFish(
+    comptime CommandT: type,
+    comptime cmd: CommandT,
+    tc_writer: anytype,
+    comptime tc_ctx: TabCompletionContext,
+) !void {
+    const long_pf = CommandT.OptionT.long_prefix orelse "";
+    const short_pf = CommandT.OptionT.short_prefix;
+    const root = tc_ctx.root_name;
+
+    // Fish uses `-l name` for `--name` (standard GNU long options) and `-o name` for
+    // `-name` (old-style single-dash long options). If the prefix is non-standard,
+    // fall back to `-a` with the raw prefixed string.
+    const use_fish_long = comptime mem.eql(u8, long_pf, "--");
+    const use_fish_old = comptime mem.eql(u8, long_pf, "-");
+
+    // The condition controls when these completions are offered.
+    // Top-level: show when no subcommand has been entered yet.
+    // Nested: show when the parent subcommand has been seen.
+    const condition: []const u8 = comptime if (tc_ctx.idx == 1)
+        "__fish_use_subcommand"
+    else
+        "__fish_seen_subcommand_from " ++ tc_ctx.name;
+
+    // Emit subcommand completions (positional arguments, so use -a)
+    if (tc_ctx.include_cmds) {
+        if (cmd.sub_cmds) |sub_cmds| {
+            inline for (sub_cmds) |sub_cmd| {
+                const desc = comptime fishEscapeQuotes(sub_cmd.description);
+                if (desc.len > 0) {
+                    try tc_writer.print(
+                        "complete -c {s} -f -n '{s}' -a {s} -d '{s}'\n",
+                        .{ root, condition, sub_cmd.name, desc },
+                    );
+                } else {
+                    try tc_writer.print(
+                        "complete -c {s} -f -n '{s}' -a {s}\n",
+                        .{ root, condition, sub_cmd.name },
+                    );
+                }
+            }
+        }
+        if (tc_ctx.include_usage_help) {
+            try tc_writer.print(
+                "complete -c {s} -f -n '{s}' -a help -d 'Show help'\n" ++
+                "complete -c {s} -f -n '{s}' -a usage -d 'Show usage'\n",
+                .{ root, condition, root, condition },
+            );
+        }
+    }
+
+    // Emit option completions using -l/-s (idiomatic fish) when prefix is standard.
+    if (tc_ctx.include_opts) {
+        if (cmd.opts) |opts| {
+            inline for (opts) |opt| {
+                const desc = comptime fishEscapeQuotes(opt.description);
+                // Short option: -s <char> (fish handles the `-` prefix)
+                const short_flag = comptime if (short_pf != null and opt.short_name != null)
+                    " -s " ++ &[_]u8{ opt.short_name.? }
+                else
+                    "";
+                if (opt.long_name) |long_name| {
+                    // Long option flag: -l for --, -o for -, or -a as fallback
+                    const long_flag = comptime if (use_fish_long)
+                        " -l " ++ long_name
+                    else if (use_fish_old)
+                        " -o " ++ long_name
+                    else
+                        " -a '" ++ long_pf ++ long_name ++ "'";
+
+                    if (desc.len > 0) {
+                        try tc_writer.print(
+                            "complete -c {s} -n '{s}'{s}{s} -d '{s}'\n",
+                            .{ root, condition, short_flag, long_flag, desc },
+                        );
+                    } else {
+                        try tc_writer.print(
+                            "complete -c {s} -n '{s}'{s}{s}\n",
+                            .{ root, condition, short_flag, long_flag },
+                        );
+                    }
+                } else if (short_flag.len > 0) {
+                    // Short-only option (no long name)
+                    if (desc.len > 0) {
+                        try tc_writer.print(
+                            "complete -c {s} -n '{s}'{s} -d '{s}'\n",
+                            .{ root, condition, short_flag, desc },
+                        );
+                    } else {
+                        try tc_writer.print(
+                            "complete -c {s} -n '{s}'{s}\n",
+                            .{ root, condition, short_flag },
+                        );
+                    }
+                }
+            }
+        }
+        if (tc_ctx.include_usage_help) {
+            if (use_fish_long) {
+                try tc_writer.print(
+                    "complete -c {s} -n '{s}' -l help\n" ++
+                    "complete -c {s} -n '{s}' -l usage\n",
+                    .{ root, condition, root, condition },
+                );
+            } else if (use_fish_old) {
+                try tc_writer.print(
+                    "complete -c {s} -n '{s}' -o help\n" ++
+                    "complete -c {s} -n '{s}' -o usage\n",
+                    .{ root, condition, root, condition },
+                );
+            } else {
+                try tc_writer.print(
+                    "complete -c {s} -n '{s}' -a '{s}help'\n" ++
+                    "complete -c {s} -n '{s}' -a '{s}usage'\n",
+                    .{ root, condition, long_pf, root, condition, long_pf },
+                );
+            }
+        }
+    }
+
+    // Recurse into sub-commands
+    if (cmd.sub_cmds) |sub_cmds| {
+        comptime var next_ctx = tc_ctx;
+        next_ctx.parent_name = (if (tc_ctx.parent_name.len == 0) "" else tc_ctx.parent_name ++ "_") ++ tc_ctx.name;
+        next_ctx.idx += 1;
+        inline for (sub_cmds) |sub_cmd| {
+            next_ctx.name = sub_cmd.name;
+            try cmdTabCompletionFish(CommandT, sub_cmd, tc_writer, next_ctx);
+        }
+    }
+}
+
+/// Escape single quotes in a string for use in fish shell single-quoted strings.
+/// In fish, single-quoted strings use `\'` to escape a literal single quote.
+fn fishEscapeQuotes(comptime s: []const u8) []const u8 {
+    comptime {
+        if (s.len == 0) return s;
+        var count: usize = 0;
+        for (s) |c| { if (c == '\'') count += 1; }
+        if (count == 0) return s;
+        var buf: [s.len + count]u8 = undefined;
+        var i: usize = 0;
+        for (s) |c| {
+            if (c == '\'') {
+                buf[i] = '\\';
+                i += 1;
+            }
+            buf[i] = c;
+            i += 1;
+        }
+        const out = buf;
+        return out[0..i];
     }
 }
