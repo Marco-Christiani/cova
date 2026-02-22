@@ -65,6 +65,8 @@ pub const MetaDocConfig = struct{
         zsh,
         /// Generate a PowerShell Tab Completion Script.
         ps1,
+        /// Generate a Fish Tab Completion Script.
+        fish,
         /// Generate a JSON Argument Template.
         /// This is useful for parsing the main Command using external tools.
         json,
