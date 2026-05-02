@@ -50,6 +50,12 @@ pub fn build(b: *std.Build) void {
     //==========================================
     // Examples
     //==========================================
+    // Examples build is gated behind `-Dexamples=true` since they have
+    //  their own (0.15-era) source that's not part of the dependency
+    //  contract. Building them inside zigrad's parent build pulled them
+    //  into the root install set with no opt-out.
+    const build_examples = b.option(bool, "examples", "Build cova example apps") orelse false;
+    if (!build_examples) return;
     const examples = &.{ "cova-demo", "basic_app", "logger" };
     var ex_arena: std.heap.ArenaAllocator = .init(b.allocator);
     defer ex_arena.deinit();
